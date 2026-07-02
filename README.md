@@ -54,3 +54,53 @@ docker compose up --build
 ```bash
 mvn test
 ```
+
+# API Documentation
+
+## Create Users
+```http
+POST /users
+{
+  "name": "John",
+  "email": "john@test.com"
+}
+```
+## Create Slot
+```http
+POST /users/{userId}/slots
+{
+"startTime": "2026-07-03T09:00:00",
+"endTime": "2026-07-03T10:00:00"
+}
+```
+## Fetch Slot
+Get all slots
+```http
+GET /users/{userId}/slots
+```
+
+## Fetch Slot by Status
+```http
+GET /users/{userId}/slots?status=FREE
+```
+
+## Create Meeting
+```http
+POST /meetings
+{
+"title": "Sprint Planning",
+"description": "Planning session",
+"organizerSlotId": 1,
+"participantIds": [2, 3]
+}
+```
+
+## View Calendar
+```http
+GET /users/{userId}/calendar?from=2026-07-03T08:00:00&to=2026-07-03T12:00:00
+```
+
+## Cancel Meeting
+```http
+DELETE /meetings/{meetingId}
+```

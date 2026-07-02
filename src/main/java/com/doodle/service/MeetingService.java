@@ -6,6 +6,12 @@ import com.doodle.entity.Meeting;
 import com.doodle.entity.Slot;
 import com.doodle.entity.SlotStatus;
 import com.doodle.entity.User;
+import com.doodle.exceptions.InvalidMeetingException;
+import com.doodle.exceptions.MeetingNotFoundException;
+import com.doodle.exceptions.ParticipantUnavailableException;
+import com.doodle.exceptions.SlotAlreadyBookedException;
+import com.doodle.exceptions.SlotNotFoundException;
+import com.doodle.exceptions.UserNotFoundException;
 import com.doodle.repo.MeetingRepository;
 import com.doodle.repo.SlotRepository;
 import com.doodle.repo.UserRepository;
@@ -14,7 +20,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -27,13 +35,25 @@ public class MeetingService {
 
     public MeetingResponse create(CreateMeetingRequest request) {
 
-        Slot organizerSlot = slotRepository.findById(
-                        request.getOrganizerSlotId())
-                .orElseThrow(() ->
-                        new RuntimeException("Organizer slot not found"));
+        // Validate duplicate participants
+        Set<Long> participantIds = new HashSet<>(request.getParticipantIds());
+
+        if (participantIds.size() != request.getParticipantIds().size()) {
+            throw new InvalidMeetingException("Duplicate participants are not allowed.");
+        }
+
+        // Lock organizer slot
+        Slot organizerSlot = slotRepository.findByIdForUpdate(request.getOrganizerSlotId())
+                .orElseThrow(() -> new SlotNotFoundException(request.getOrganizerSlotId()));
 
         if (organizerSlot.getStatus() == SlotStatus.BUSY) {
-            throw new RuntimeException("Slot already booked");
+            throw new SlotAlreadyBookedException();
+        }
+
+        Long organizerId = organizerSlot.getUser().getId();
+
+        if (participantIds.contains(organizerId)) {
+            throw new InvalidMeetingException("Organizer cannot also be a participant.");
         }
 
         Meeting meeting = Meeting.builder()
@@ -42,51 +62,47 @@ public class MeetingService {
                 .build();
 
         List<User> participants = new ArrayList<>();
+        List<Slot> slotsToUpdate = new ArrayList<>();
 
-        for (Long participantId : request.getParticipantIds()) {
+        // Load participants
+        for (Long participantId : participantIds) {
 
             User participant = userRepository.findById(participantId)
-                    .orElseThrow(() ->
-                            new RuntimeException("User not found"));
+                    .orElseThrow(() -> new UserNotFoundException(participantId));
 
             participants.add(participant);
         }
 
         meeting.setParticipants(participants);
-
         meeting = meetingRepository.save(meeting);
 
-        organizerSlot.setMeeting(meeting);
+        // Reserve organizer slot
         organizerSlot.setStatus(SlotStatus.BUSY);
+        organizerSlot.setMeeting(meeting);
+        slotsToUpdate.add(organizerSlot);
 
-        slotRepository.save(organizerSlot);
-
+        // Reserve participant slots
         for (User participant : participants) {
 
-            Slot slot = slotRepository
-                    .findByUserIdAndStatusAndStartTimeAndEndTime(
-
+            Slot participantSlot = slotRepository
+                    .findAvailableSlotsForUpdate(
                             participant.getId(),
-
                             SlotStatus.FREE,
-
                             organizerSlot.getStartTime(),
-
                             organizerSlot.getEndTime())
-
                     .stream()
                     .findFirst()
-
                     .orElseThrow(() ->
-                            new RuntimeException(
-                                    participant.getName()
-                                            + " has no available slot"));
+                            new ParticipantUnavailableException(participant.getId()));
 
-            slot.setMeeting(meeting);
-            slot.setStatus(SlotStatus.BUSY);
+            participantSlot.setStatus(SlotStatus.BUSY);
+            participantSlot.setMeeting(meeting);
 
-            slotRepository.save(slot);
+            slotsToUpdate.add(participantSlot);
         }
+
+        slotRepository.saveAll(slotsToUpdate);
+
         return MeetingResponse.builder()
                 .id(meeting.getId())
                 .title(meeting.getTitle())
@@ -99,22 +115,17 @@ public class MeetingService {
                 .build();
     }
 
-    @Transactional
     public void cancel(Long meetingId) {
 
         Meeting meeting = meetingRepository.findById(meetingId)
-                .orElseThrow(() ->
-                        new RuntimeException("Meeting not found"));
+                .orElseThrow(() -> new MeetingNotFoundException(meetingId));
 
-        for (Slot slot : meeting.getBookedSlots()) {
-
+        meeting.getBookedSlots().forEach(slot -> {
             slot.setStatus(SlotStatus.FREE);
             slot.setMeeting(null);
+        });
 
-            slotRepository.save(slot);
-        }
-
+        slotRepository.saveAll(meeting.getBookedSlots());
         meetingRepository.delete(meeting);
     }
-
 }
